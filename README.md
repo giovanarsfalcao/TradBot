@@ -65,3 +65,9 @@ Common automation mistakes I see:
 • Insufficient testing before going live
 • Taking way too long to go live
 Keep the ideas simple, but text extensively.
+
+
+Important Info:
+1. yfinance must be constantly updated, preferably with both commands:
+conda remove -y yfinance
+conda install -c conda-forge yfinance
