@@ -34,3 +34,7 @@ if [ $? -eq 0 ]; then
 else
     echo "FEHLER: Conda konnte die Umgebung nicht aktualisieren/erstellen."
 fi
+
+# On Terminal: 
+# chmod +x update_env.sh  # Dies muss nur einmal gemacht werden
+# ./update_env.sh         # Dies starten Sie jedes Mal, wenn Sie die Umgebung aktualisieren oder neu erstellen wollen
