@@ -2,7 +2,7 @@
 
 # --- Skript zur automatischen Aktualisierung oder Neuerstellung der Conda-Umgebung ---
 
-ENV_NAME="quant-analysis"
+ENV_NAME="Quant"
 YAML_FILE="environment.yml"
 
 echo "Starte Conda Umgebungs-Management..."
@@ -34,8 +34,3 @@ if [ $? -eq 0 ]; then
 else
     echo "FEHLER: Conda konnte die Umgebung nicht aktualisieren/erstellen."
 fi
-
-chmod +x update_env.sh
-3.  **Ausführen:** Starten Sie das Skript, um Ihre Umgebung automatisch zu erstellen/aktualisieren:
-```bash
-./update_env.sh

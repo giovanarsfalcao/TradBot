@@ -1,39 +1,20 @@
 # Rezept für Conda Umgebung
 
-name: quant-analysis
+name: Quant
 channels:
-
-conda-forge
+- conda-forge 
 dependencies:
+- yfinance 
+- python=3.11
+# Web-Application
+- streamlit
+# Data Handling & Numerische Pakete
+- pandas
+- numpy
+- pyarrow
+# Statistik und Plotting
+- statsmodels 
+- matplotlib
+# Finanzendaten-Abruf (YFinance)
+- yfinance
 
-Python Version
-
-python=3.11
-
-Quant Libraries (Hier erzwingen wir den neuesten stabilen Stand)
-
-Conda wird die neueste YFinance-Version finden, die mit den anderen Paketen funktioniert.
-
-yfinance
-
-statsmodels
-
-Data Handling
-
-pandas
-
-numpy
-
-matplotlib
-
-pyarrow
-
-Web App
-
-streamlit
-
-Temporär fehlende Abhängigkeiten für YFinance (um Fehler zu vermeiden)
-
-frozendict
-
-multitasking
