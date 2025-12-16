@@ -4,8 +4,8 @@ name: Quant
 channels:
 - conda-forge 
 dependencies:
-- yfinance 
 - python=3.11
+- pip
 # Web-Application
 - streamlit
 # Data Handling & Numerische Pakete
@@ -17,5 +17,9 @@ dependencies:
 - matplotlib
 # Finanzendaten-Abruf (YFinance)
 - yfinance
-- curl_cffi # pip install curl_cffi
+
+# Pakete, die nur über Pip installiert werden können
+- pip:
+  - curl_cffi  # pip install curl_cffi
+  - scikit-learn
 
