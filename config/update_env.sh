@@ -38,3 +38,5 @@ fi
 # On Terminal: 
 # chmod +x update_env.sh  # Dies muss nur einmal gemacht werden
 # ./update_env.sh         # Dies starten Sie jedes Mal, wenn Sie die Umgebung aktualisieren oder neu erstellen wollen
+# python -c "import yfinance; print(yfinance.__version__)"  #yfinance Version
+    # Version must be > 0.2.28
