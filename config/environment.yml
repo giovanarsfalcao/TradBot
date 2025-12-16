@@ -19,7 +19,8 @@ dependencies:
 - yfinance
 
 # Pakete, die nur über Pip installiert werden können
-- pip:
-  - curl_cffi  # pip install curl_cffi
-  - scikit-learn
+pip:
+- curl_cffi  # pip install curl_cffi
+- scikit-learn
+- seaborn
 
