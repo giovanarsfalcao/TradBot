@@ -17,4 +17,5 @@ dependencies:
 - matplotlib
 # Finanzendaten-Abruf (YFinance)
 - yfinance
+- curl_cffi # pip install curl_cffi
 
