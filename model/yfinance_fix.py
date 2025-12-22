@@ -44,7 +44,6 @@ except Exception as e:
     print(f"[yfinance_fix] Fehler beim Erstellen der Session: {e}")
     chrome_session = None
 
-# Lösung:
 
 # Problem: Yahoo Finance blockiert Ihr Programm, weil es sich wie ein Roboter verhält.
 
