@@ -9,12 +9,12 @@ import matplotlib.pyplot as plt
 import statsmodels.api as sm
 
 # --- SEITENKONFIGURATION ---
-st.set_page_config(page_title="Quant Regression Analysis", layout="wide")
+st.set_page_config(page_title="Building a Trading Bot", layout="wide")
 
-st.title("📈 Quantitative Regressions-Analyse")
+st.title("📈 Building a Trading Bot")
 st.markdown("""
-Diese App führt eine OLS-Regression durch, um die Beziehung zwischen technischen Indikatoren 
-(wie Fair Value Gaps & MACD) und zukünftigen Preisänderungen zu untersuchen.
+Diese App führt eine OLS-Regression und eine LOG-Regression durch, um die Beziehung zwischen technischen Indikatoren 
+(MACD, MFI, RSI, BB) und zukünftigen Preisänderungen zu untersuchen.
 """)
 
 # --- SIDEBAR: BENUTZER-INPUTS (GLOBALE VARIABLEN) ---
@@ -31,11 +31,11 @@ else:
     PERIOD = "max"
 
 # Schritt 3: Strategie (Features) auswählen
-available_features = ["Close", "Volume", "Both_FVG", "MACD_HIST"]
+available_features = ["Close", "Volume", "MACD_HIST", "MFI", "BB", "RSI"]
 STRATEGY = st.sidebar.multiselect(
     "Unabhängige Variablen (Features)", 
     options=available_features, 
-    default=["Both_FVG", "MACD_HIST"]
+    default=["Close", "Volume",]
 )
 
 # MACD Einstellungen (Optional in Expander verstecken, um es sauber zu halten)
@@ -48,7 +48,7 @@ with st.sidebar.expander("MACD Einstellungen"):
 SHIFT = st.sidebar.number_input("Shift (Tage in die Zukunft)", min_value=1, value=1)
 
 # Schritt 5: Lookback
-LOOKBACK = st.sidebar.slider("Lookback (Anzahl Zeilen)", min_value=100, max_value=20000, value=10000, step=100)
+LOOKBACK = st.sidebar.slider("Lookback (Anzahl Zeilen)", min_value=100, max_value=10000, value=5000, step=100)
 
 # --- FUNKTIONEN (Angepasst für Streamlit) ---
 
@@ -68,18 +68,6 @@ def get_data(ticker, interval, period, lookback):
 def add_target(df, shift):
     # Zielvariable: Prozentuale Änderung in 'shift' Tagen
     df["Target"] = (df["Close"].shift(-shift) - df["Close"]) / df["Close"] * 100
-    return df
-
-def bull_fvg(df):
-    df['High_2prev'] = df['High'].shift(2)
-    df['Bull_FVG'] = (df['Low'] > df['High_2prev']).astype(int)
-    df['Bull_FVG_Val'] = (df['Low'] - df['High_2prev']) * df['Bull_FVG'] / df['Close']
-    return df
-
-def bear_fvg(df):
-    df['Low_2prev'] = df['Low'].shift(2)
-    df['Bear_FVG'] = (df['High'] < df['Low_2prev']).astype(int)
-    df['Bear_FVG_Val'] = (df['High'] - df['Low_2prev']) * df['Bear_FVG'] / df['Close']
     return df
 
 def add_MACD(df, fast, slow, span):
