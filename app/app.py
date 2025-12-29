@@ -12,10 +12,10 @@ import yfinance_fix # Importiert den zuvor erstellten Fix
 st.set_page_config(page_title="Quant Regression Tool", layout="wide")
 
 # --- SIDEBAR: BENUTZER-EINGABEN ---
-st.sidebar.header("1. Daten-Einstellungen")
+st.sidebar.header("Daten-Einstellungen")
 TICKER = st.sidebar.text_input("Ticker Symbol", value="SPY")
 INTERVAL = st.sidebar.selectbox("Intervall", ["1d", "1h", "15m", "5m"], index=0)
-LOOKBACK = st.sidebar.number_input("Lookback (Anzahl Zeilen)", value=10000, step=1000)
+LOOKBACK = st.sidebar.number_input("Lookback (Anzahl Zeilen)", value=10000, step=100)
 SHIFT = st.sidebar.slider("Vorhersage-Zeitraum (Shift)", 1, 30, 5)
 
 if INTERVAL == "1h":
@@ -23,7 +23,7 @@ if INTERVAL == "1h":
 else: 
     PERIOD = "max"
 
-st.sidebar.header("2. Indikator-Parameter")
+st.sidebar.header("Indikator-Parameter")
 
 # MACD Einstellungen
 with st.sidebar.expander("MACD Parameter"):
@@ -106,7 +106,7 @@ def process_regression_data(df, shift):
 
 # --- MAIN UI ---
 
-st.title("📈 Quant Strategy Regression Tool")
+st.title("Quant Strategy Regression Tool")
 st.markdown(f"Analyse für **{TICKER}** | Intervall: **{INTERVAL}** | Shift: **{SHIFT}**")
 
 if st.button("Analyse Starten"):
@@ -211,6 +211,6 @@ else:
     st.info("Klicke auf 'Analyse Starten', um die Regression mit den aktuellen Parametern durchzuführen.")
 
 # 1.  **Installation:** Stellen Sie sicher, dass Sie `streamlit` installiert haben:
-#     pip install yfinance_fix
+#     pip install 
 # 2.  **App starten:** Öffnen Sie Ihr Terminal, navigieren Sie zu dem Ordner, in dem die Datei liegt, und führen Sie aus:
-#     streamlit run app_2.py
+#     streamlit run app.py
