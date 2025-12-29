@@ -1,241 +1,216 @@
-## App for Multivariate Regression (7_Multivariable_Regression) in model
-
 import streamlit as st
-import numpy as np
+import numpy as np 
 import pandas as pd
 from pandas.plotting import lag_plot
 import yfinance as yf
 import matplotlib.pyplot as plt
 import statsmodels.api as sm
+import seaborn as sns
+import yfinance_fix # Importiert den zuvor erstellten Fix
 
-# --- SEITENKONFIGURATION ---
-st.set_page_config(page_title="Building a Trading Bot", layout="wide")
+# --- SEITEN-KONFIGURATION ---
+st.set_page_config(page_title="Quant Regression Tool", layout="wide")
 
-st.title("📈 Building a Trading Bot")
-st.markdown("""
-Diese App führt eine OLS-Regression und eine LOG-Regression durch, um die Beziehung zwischen technischen Indikatoren 
-(MACD, MFI, RSI, BB) und zukünftigen Preisänderungen zu untersuchen.
-""")
-
-# --- SIDEBAR: BENUTZER-INPUTS (GLOBALE VARIABLEN) ---
-st.sidebar.header("⚙️ Einstellungen")
-
-# Schritt 1: Ticker
+# --- SIDEBAR: BENUTZER-EINGABEN ---
+st.sidebar.header("1. Daten-Einstellungen")
 TICKER = st.sidebar.text_input("Ticker Symbol", value="SPY")
+INTERVAL = st.sidebar.selectbox("Intervall", ["1d", "1h", "15m", "5m"], index=0)
+LOOKBACK = st.sidebar.number_input("Lookback (Anzahl Zeilen)", value=10000, step=1000)
+SHIFT = st.sidebar.slider("Vorhersage-Zeitraum (Shift)", 1, 30, 5)
 
-# Schritt 2: Zeitraum
-INTERVAL = st.sidebar.selectbox("Intervall", options=["1d", "1h", "1m"], index=0)
 if INTERVAL == "1h":
     PERIOD = "730d"
-else:
+else: 
     PERIOD = "max"
 
-# Schritt 3: Strategie (Features) auswählen
-available_features = ["Close", "Volume", "MACD_HIST", "MFI", "BB", "RSI"]
-STRATEGY = st.sidebar.multiselect(
-    "Unabhängige Variablen (Features)", 
-    options=available_features, 
-    default=["Close", "Volume",]
-)
+st.sidebar.header("2. Indikator-Parameter")
 
-# MACD Einstellungen (Optional in Expander verstecken, um es sauber zu halten)
-with st.sidebar.expander("MACD Einstellungen"):
+# MACD Einstellungen
+with st.sidebar.expander("MACD Parameter"):
     MACD_FAST = st.number_input("Fast EMA", value=12)
     MACD_SLOW = st.number_input("Slow EMA", value=27)
     MACD_SPAN = st.number_input("Signal Span", value=9)
 
-# Schritt 4: Shift (Vorhersage-Horizont)
-SHIFT = st.sidebar.number_input("Shift (Tage in die Zukunft)", min_value=1, value=1)
+# MFI Einstellungen
+with st.sidebar.expander("MFI Parameter"):
+    MFI_LENGTH = st.number_input("MFI Länge", value=14)
+    MFI_OB = st.slider("MFI Overbought", 50, 90, 70)
+    MFI_OS = st.slider("MFI Oversold", 10, 50, 30)
 
-# Schritt 5: Lookback
-LOOKBACK = st.sidebar.slider("Lookback (Anzahl Zeilen)", min_value=100, max_value=10000, value=5000, step=100)
+# BB Einstellungen
+with st.sidebar.expander("Bollinger Bands"):
+    BB_LENGTH = st.number_input("BB Länge", value=20)
+    BB_STD = st.number_input("Std Abweichung", value=2)
 
-# --- FUNKTIONEN (Angepasst für Streamlit) ---
+# RSI Einstellungen
+with st.sidebar.expander("RSI Parameter"):
+    RSI_LENGTH = st.number_input("RSI Länge", value=14)
+    RSI_OB = st.slider("RSI Overbought", 50, 90, 70)
+    RSI_OS = st.slider("RSI Oversold", 10, 50, 30)
 
-@st.cache_data # WICHTIG: Verhindert ständiges Neuladen der Daten
-def get_data(ticker, interval, period, lookback):
-    try:
-        df = yf.download(ticker, interval=interval, period=period, progress=False)
-        # Handle MultiIndex columns if necessary
-        if isinstance(df.columns, pd.MultiIndex):
-            df.columns = df.columns.get_level_values(0)
-        df = df.reset_index(drop=True)
-        return df.iloc[-lookback:, :]
-    except Exception as e:
-        st.error(f"Fehler beim Laden der Daten: {e}")
-        return pd.DataFrame()
+STRATEGY = st.sidebar.multiselect(
+    "Features für Regression wählen", 
+    ["MACD_HIST", "MFI", "BB", "RSI"], 
+    default=["MACD_HIST", "MFI", "BB", "RSI"]
+)
 
-def add_target(df, shift):
-    # Zielvariable: Prozentuale Änderung in 'shift' Tagen
-    df["Target"] = (df["Close"].shift(-shift) - df["Close"]) / df["Close"] * 100
-    return df
+# --- FUNKTIONEN FÜR BERECHNUNGEN ---
 
-def add_MACD(df, fast, slow, span):
-    df[f"{fast}_ema"] = df["Close"].ewm(span=fast).mean()
-    df[f"{slow}_ema"] = df["Close"].ewm(span=slow).mean()
-    df["MACD"] = df[f"{fast}_ema"] - df[f"{slow}_ema"]
-    df["Signal"] = df["MACD"].ewm(span=span).mean()
-    df["MACD_HIST"] = df["MACD"] - df["Signal"]
-    return df
-
-def prepare_df_for_regression(df):
-    # Logik: Filtern nach FVG Existenz
-    df = df[(df['Bull_FVG'] == 1) | (df['Bear_FVG'] == 1)].copy()
-    df['Both_FVG'] = df['Bear_FVG_Val'] + df['Bull_FVG_Val']
-    return df
-
-def run_regression_and_plot(df, features, target="Target"):
-    # Daten bereinigen
-    subset = df[features + [target]].dropna()
-    
-    if subset.empty:
-        st.warning("Nicht genügend Daten nach dem Bereinigen (dropna). Bitte Parameter prüfen.")
-        return None, None, None, None
-
-    X = subset[features]
-    y = subset[target]
-    
-    # Modell erstellen
-    X_with_const = sm.add_constant(X)
-    model = sm.OLS(y, X_with_const).fit()
-    
-    # Ergebnisse
-    intercept = model.params['const']
-    coefficients = model.params.drop('const')
-    model_p_value = model.f_pvalue
-    y_pred = model.predict(X_with_const)
-    
-    # Ergebnisse in Streamlit anzeigen
-    st.subheader("1. Regressions-Ergebnisse (OLS)")
-    
-    # Summary als Textbox
-    st.text(model.summary())
-    
-    # Wichtige Metriken hervorheben
-    col1, col2, col3 = st.columns(3)
-    col1.metric("R-Squared", f"{model.rsquared:.4f}")
-    col2.metric("P-Value (Model)", f"{model_p_value:.6f}")
-    col3.metric("Beobachtungen", f"{len(subset)}")
-
-    # Plot Actual vs Predicted
-    st.subheader("2. Vorhersage vs. Realität")
-    fig, ax = plt.subplots(figsize=(10, 5))
-    ax.scatter(y_pred, y, alpha=0.6, label="Datenpunkte")
-    # 45-Grad Linie (Perfekte Vorhersage)
-    min_val = min(y.min(), y_pred.min())
-    max_val = max(y.max(), y_pred.max())
-    ax.plot([min_val, max_val], [min_val, max_val], color='red', linestyle='--', label="Ideallinie (y=x)")
-    ax.set_xlabel("Vorhersage (Predicted)")
-    ax.set_ylabel("Tatsächlich (Actual)")
-    ax.set_title("Actual vs. Predicted")
-    ax.legend()
-    ax.grid(True)
-    st.pyplot(fig) # Streamlit Plot Befehl
-
-    return df, intercept, coefficients, y_pred
-
-def validate_model_plots(df, coef, intercept, features):
-    # Vorhersage berechnen (manuell zur Validierung)
-    # Hinweis: Da wir mehrere Features haben können, ist die manuelle Berechnung komplexer.
-    # Wir nutzen hier vereinfacht die Residuen, die wir aus der Regression ableiten könnten,
-    # aber um dem Originalcode treu zu bleiben, berechnen wir es hier neu basierend auf den Features.
-    
-    # Achtung: Wir müssen sicherstellen, dass wir auf dem gleichen Subset arbeiten
-    # Um Fehler zu vermeiden, berechnen wir Predictions direkt im Regressionsschritt (siehe oben)
-    # und nutzen hier nur die Visualisierung, wenn df 'Predictions' hat.
-    
-    # Wir berechnen Predictions neu für den ganzen DF (wo möglich)
-    df["Predictions"] = intercept
-    for feature in features:
-        if feature in coef.index:
-            df["Predictions"] += df[feature] * coef[feature]
-            
-    df["Residuals"] = df["Target"] - df["Predictions"]
-    
-    # Wir droppen NaNs für die Plots
-    df_clean = df.dropna(subset=["Residuals", "Predictions"])
-
-    st.subheader("3. Validierung & Residuen Analyse")
-    
-    tab1, tab2, tab3 = st.tabs(["Linearität", "Unabhängigkeit", "Normalität"])
-
-    with tab1:
-        st.markdown("**Test auf Linearität & Homoskedastizität**")
-        fig1, ax1 = plt.subplots()
-        ax1.scatter(df_clean['Predictions'], df_clean['Residuals'], alpha=0.5)
-        ax1.axhline(0, color='red', linestyle='--')
-        ax1.set_xlabel("Predicted Values")
-        ax1.set_ylabel("Residuals")
-        ax1.set_title("Residuals vs. Predictions")
-        st.pyplot(fig1)
-
-    with tab2:
-        st.markdown("**Test auf Unabhängigkeit (Autokorrelation)**")
-        fig2, ax2 = plt.subplots()
-        lag_plot(df_clean['Residuals'], ax=ax2)
-        ax2.set_title("Lag Plot of Residuals")
-        st.pyplot(fig2)
-
-    with tab3:
-        st.markdown("**Test auf Normalverteilung**")
-        fig3, ax3 = plt.subplots()
-        ax3.hist(df_clean['Residuals'], bins=50, edgecolor='k')
-        ax3.set_title("Histogram of Residuals")
-        st.pyplot(fig3)
-
-# --- HAUPT-EXECUTION (MAIN) ---
-
-def main():
-    # Prüfen ob Features ausgewählt sind
-    if not STRATEGY:
-        st.warning("Bitte wählen Sie mindestens ein Feature in der Sidebar aus.")
-        return
-
-    # Daten laden
-    with st.spinner('Lade Daten...'):
-        df = get_data(TICKER, INTERVAL, PERIOD, LOOKBACK)
-    
+@st.cache_data
+def load_data(ticker, interval, period, lookback):
+    df = yf.download(ticker, session=yfinance_fix.chrome_session, interval=interval, period=period, progress=False)
     if df.empty:
-        return
+        return None
+    df.columns = df.columns.get_level_values(0)
+    df = df.reset_index()
+    return df.iloc[-lookback:, :].copy()
 
-    # Indikatoren berechnen
-    df = add_target(df, SHIFT)
-    df = bull_fvg(df)
-    df = bear_fvg(df)
-    df = add_MACD(df, MACD_FAST, MACD_SLOW, MACD_SPAN)
+def add_indicators(df):
+    # MACD
+    df["ema_f"] = df["Close"].ewm(span=MACD_FAST).mean()
+    df["ema_s"] = df["Close"].ewm(span=MACD_SLOW).mean()
+    df["MACD"] = df["ema_f"] - df["ema_s"]
+    df["Signal"] = df["MACD"].ewm(span=MACD_SPAN).mean()
+    df["MACD_HIST"] = df["MACD"] - df["Signal"]
     
-    # Daten für Regression vorbereiten (Filtert nach FVG!)
-    # Hinweis: Wenn Features gewählt sind, die nichts mit FVG zu tun haben, 
-    # reduziert dieser Schritt trotzdem die Datenmenge drastisch.
-    # Wir lassen es hier so, wie im Originalcode gewünscht.
-    df = prepare_df_for_regression(df)
+    # MFI
+    tp = (df["High"] + df["Low"] + df["Close"]) / 3
+    mf = tp * df["Volume"]
+    pos_f = np.where(tp.diff() > 0, mf, 0)
+    neg_f = np.where(tp.diff() < 0, mf, 0)
+    mfr = pd.Series(pos_f).rolling(MFI_LENGTH).sum() / pd.Series(neg_f).rolling(MFI_LENGTH).sum()
+    df["MFI"] = 100 - (100 / (1 + mfr.values))
     
-    # Raw Data Preview (Optional)
-    with st.expander("Rohdaten anzeigen"):
-        st.dataframe(df.tail())
-
-    # Regression durchführen
-    df_res, intercept, coef, _ = run_regression_and_plot(df, STRATEGY, target="Target")
+    # BB
+    df["BB_SMA"] = df["Close"].rolling(BB_LENGTH).mean()
+    df["BB_STD"] = df["Close"].rolling(BB_LENGTH).std()
+    u_band = df["BB_SMA"] + (BB_STD * df["BB_STD"])
+    l_band = df["BB_SMA"] - (BB_STD * df["BB_STD"])
+    df["BB"] = (u_band - df["Close"]) / (u_band - l_band)
     
-    if df_res is not None:
-        # Validierung
-        validate_model_plots(df_res, coef, intercept, STRATEGY)
+    # RSI
+    delta = df["Close"].diff()
+    gain = (delta.where(delta > 0, 0)).rolling(window=RSI_LENGTH).mean()
+    loss = (-delta.where(delta < 0, 0)).rolling(window=RSI_LENGTH).mean()
+    rs = gain / loss
+    df["RSI"] = 100 - (100 / (1 + rs))
+    
+    return df.dropna()
 
-if __name__ == "__main__":
-    main()
+def process_regression_data(df, shift):
+    df[f"Close+{shift}"] = df["Close"].shift(-shift)
+    df["Target"] = (df[f"Close+{shift}"] - df["Close"]) / df["Close"] * 100
+    # Down-Sampling gegen Autokorrelation
+    df_sampled = df.iloc[::shift].copy()
+    return df_sampled.dropna()
 
+# --- MAIN UI ---
 
-### Anleitung zum Starten der App (Stop Terminal: Ctr + c)
+st.title("📈 Quant Strategy Regression Tool")
+st.markdown(f"Analyse für **{TICKER}** | Intervall: **{INTERVAL}** | Shift: **{SHIFT}**")
+
+if st.button("Analyse Starten"):
+    with st.spinner("Daten werden verarbeitet..."):
+        # 1. Daten laden
+        df_raw = load_data(TICKER, INTERVAL, PERIOD, LOOKBACK)
+        
+        if df_raw is not None:
+            # 2. Indikatoren berechnen
+            df_ind = add_indicators(df_raw)
+            
+            # 3. Target & Down-Sampling
+            df_final = process_regression_data(df_ind, SHIFT)
+            
+            if len(df_final) < 20:
+                st.error("Zu wenig Datenpunkte nach dem Down-Sampling. Erhöhe den Lookback!")
+            else:
+                # 4. Regression
+                X = df_final[STRATEGY]
+                y = df_final["Target"]
+                X_const = sm.add_constant(X)
+                model = sm.OLS(y, X_const).fit()
+                
+                # --- ERGEBNISSE ANZEIGEN ---
+                col1, col2 = st.columns([2, 1])
+                
+                with col1:
+                    st.subheader("Modell Zusammenfassung")
+                    st.text(model.summary())
+                
+                with col2:
+                    st.subheader("Wichtigste Metriken")
+                    st.metric("R-Squared", f"{model.rsquared:.4f}")
+                    st.metric("Anzahl Beobachtungen", len(df_final))
+                    st.metric("P-Value (Modell)", f"{model.f_pvalue:.6f}")
+
+                # --- VISUALISIERUNG ---
+                st.divider()
+                st.subheader("Visualisierung der Ergebnisse")
+                
+                v_col1, v_col2 = st.columns(2)
+                
+                with v_col1:
+                    # Actual vs Predicted
+                    fig_res, ax_res = plt.subplots()
+                    y_pred = model.predict(X_const)
+                    ax_res.scatter(y_pred, y, alpha=0.5, color="royalblue")
+                    ax_res.plot(y_pred, y_pred, color='red', linestyle='--')
+                    ax_res.set_title("Tatsächlich vs. Vorhergesagt")
+                    ax_res.set_xlabel("Vorhersage (y_pred)")
+                    ax_res.set_ylabel("Tatsächlich (y_actual)")
+                    st.pyplot(fig_res)
+                
+                with v_col2:
+                    # MACD Histogramm Plot
+                    fig_macd, ax_macd = plt.subplots()
+                    colors = ['green' if x >= 0 else 'red' for x in df_ind["MACD_HIST"].tail(100)]
+                    ax_macd.bar(range(100), df_ind["MACD_HIST"].tail(100), color=colors)
+                    ax_macd.set_title("MACD Histogramm (Letzte 100 Perioden)")
+                    st.pyplot(fig_macd)
+
+                # --- VALIDIERUNG ---
+                st.divider()
+                st.subheader("Statistische Validierung (Residuen-Analyse)")
+                
+                # Residuen berechnen
+                df_final["Predictions"] = model.predict(X_const)
+                df_final["Residuals"] = df_final["Target"] - df_final["Predictions"]
+                
+                val_col1, val_col2, val_col3 = st.columns(3)
+                
+                with val_col1:
+                    st.write("**1. Linearität & Homoskedastizität**")
+                    fig_v1, ax_v1 = plt.subplots()
+                    ax_v1.scatter(df_final["Predictions"], df_final["Residuals"], alpha=0.5)
+                    ax_v1.axhline(0, color='red', linestyle='--')
+                    st.pyplot(fig_v1)
+                    
+                with val_col2:
+                    st.write("**2. Unabhängigkeit (Lag Plot)**")
+                    fig_v2, ax_v2 = plt.subplots()
+                    lag_plot(df_final["Residuals"], ax=ax_v2)
+                    st.pyplot(fig_v2)
+                    
+                with val_col3:
+                    st.write("**3. Normalverteilung**")
+                    fig_v3, ax_v3 = plt.subplots()
+                    ax_v3.hist(df_final["Residuals"], bins=30, color="skyblue", edgecolor="black")
+                    st.pyplot(fig_v3)
+                
+                # Rohdaten Download
+                st.divider()
+                st.download_button(
+                    label="Analysierte Daten als CSV exportieren",
+                    data=df_final.to_csv().encode('utf-8'),
+                    file_name=f"{TICKER}_quant_data.csv",
+                    mime="text/csv"
+                )
+        else:
+            st.error("Daten konnten nicht geladen werden. Prüfe Ticker und Verbindung.")
+else:
+    st.info("Klicke auf 'Analyse Starten', um die Regression mit den aktuellen Parametern durchzuführen.")
 
 # 1.  **Installation:** Stellen Sie sicher, dass Sie `streamlit` installiert haben:
-#     pip install streamlit statsmodels yfinance matplotlib pandas
-# 2.  **Datei speichern:** Speichern Sie den obigen Code in einer Datei namens `app.py`.
-# 3.  **App starten:** Öffnen Sie Ihr Terminal, navigieren Sie zu dem Ordner, in dem die Datei liegt, und führen Sie aus:
-#     streamlit run app.py
-# 4. Aktuellste version alle Libraries
-#    conda update -c conda-forge pyarrow streamlit protobuf
-#    conda install -c conda-forge --force-reinstall pyarrow streamlit protobuf
-#    conda install -c conda-forge frozendict
-#    conda install -c conda-forge multitasking
-#    conda install -c conda-forge --force-reinstall yfinance
-#    conda install -c conda-forge --force-reinstall pyarrow
+#     pip install yfinance_fix
+# 2.  **App starten:** Öffnen Sie Ihr Terminal, navigieren Sie zu dem Ordner, in dem die Datei liegt, und führen Sie aus:
+#     streamlit run app_2.py
