@@ -87,11 +87,14 @@ def add_indicators(df):
     u_band = df["BB_SMA"] + (BB_STD * df["BB_STD"])
     l_band = df["BB_SMA"] - (BB_STD * df["BB_STD"])
     df["BB"] = (u_band - df["Close"]) / (u_band - l_band)
+    df["BB"] = (df["Close"] - l_band) / (u_band - l_band)
     
     # RSI
     delta = df["Close"].diff()
     gain = (delta.where(delta > 0, 0)).rolling(window=RSI_LENGTH).mean()
     loss = (-delta.where(delta < 0, 0)).rolling(window=RSI_LENGTH).mean()
+    gain = (delta.where(delta > 0, 0)).ewm(alpha=1/RSI_LENGTH, adjust=False).mean()
+    loss = (-delta.where(delta < 0, 0)).ewm(alpha=1/RSI_LENGTH, adjust=False).mean()
     rs = gain / loss
     df["RSI"] = 100 - (100 / (1 + rs))
     
