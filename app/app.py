@@ -6,63 +6,49 @@ import yfinance as yf
 import matplotlib.pyplot as plt
 import statsmodels.api as sm
 import seaborn as sns
-import yfinance_fix # Importiert den zuvor erstellten Fix
+from sklearn.metrics import confusion_matrix, roc_curve, auc, roc_auc_score
+import yfinance_fix # Voraussetzung: Datei liegt im selben Ordner
 
-# --- SEITEN-KONFIGURATION ---
-st.set_page_config(page_title="Quant Regression Tool", layout="wide")
+# --- SEITENKONFIGURATION ---
+st.set_page_config(page_title="Quant Analysis Dashboard", layout="wide")
 
-# --- SIDEBAR: BENUTZER-EINGABEN ---
-st.sidebar.header("Daten-Einstellungen")
+# --- SIDEBAR: GLOBALE EINSTELLUNGEN ---
+st.sidebar.header("📊 Daten-Konfiguration")
 TICKER = st.sidebar.text_input("Ticker Symbol", value="SPY")
 INTERVAL = st.sidebar.selectbox("Intervall", ["1d", "1h", "15m", "5m"], index=0)
-LOOKBACK = st.sidebar.number_input("Lookback (Anzahl Zeilen)", value=10000, step=100)
-SHIFT = st.sidebar.slider("Vorhersage-Zeitraum (Shift)", 1, 30, 5)
+LOOKBACK = st.sidebar.number_input("Lookback (Zeilen)", value=5000, step=100)
 
-if INTERVAL == "1h":
-    PERIOD = "730d"
-else: 
-    PERIOD = "max"
+# Modell-Modus wählen
+MODEL_TYPE = st.sidebar.radio("Wähle Analyse-Modell", ["Lineare Regression (OLS)", "Logistische Regression (Logit)"])
 
-st.sidebar.header("Indikator-Parameter")
+st.sidebar.divider()
+st.sidebar.header("⚙️ Indikator-Parameter")
 
-# MACD Einstellungen
-with st.sidebar.expander("MACD Parameter"):
-    MACD_FAST = st.number_input("Fast EMA", value=12)
-    MACD_SLOW = st.number_input("Slow EMA", value=27)
-    MACD_SPAN = st.number_input("Signal Span", value=9)
-
-# MFI Einstellungen
-with st.sidebar.expander("MFI Parameter"):
+with st.sidebar.expander("Indikator Längen"):
+    MACD_FAST = st.number_input("MACD Fast", value=12)
+    MACD_SLOW = st.number_input("MACD Slow", value=27)
+    MACD_SPAN = st.number_input("MACD Signal", value=9)
     MFI_LENGTH = st.number_input("MFI Länge", value=14)
-    MFI_OB = st.slider("MFI Overbought", 50, 90, 70)
-    MFI_OS = st.slider("MFI Oversold", 10, 50, 30)
-
-# BB Einstellungen
-with st.sidebar.expander("Bollinger Bands"):
     BB_LENGTH = st.number_input("BB Länge", value=20)
-    BB_STD = st.number_input("Std Abweichung", value=2)
-
-# RSI Einstellungen
-with st.sidebar.expander("RSI Parameter"):
     RSI_LENGTH = st.number_input("RSI Länge", value=14)
-    RSI_OB = st.slider("RSI Overbought", 50, 90, 70)
-    RSI_OS = st.slider("RSI Oversold", 10, 50, 30)
 
-STRATEGY = st.sidebar.multiselect(
-    "Features für Regression wählen", 
-    ["MACD_HIST", "MFI", "BB", "RSI"], 
-    default=["MACD_HIST", "MFI", "BB", "RSI"]
-)
+# Strategie-Auswahl
+STRATEGY_OPTIONS = ["MACD_HIST", "MFI", "BB", "RSI", "Volume_Change", "Close_Change"]
+STRATEGY = st.sidebar.multiselect("Features für das Modell", STRATEGY_OPTIONS, default=["MACD_HIST", "MFI", "BB", "RSI"])
 
-# --- FUNKTIONEN FÜR BERECHNUNGEN ---
+# --- FUNKTIONEN ---
 
 @st.cache_data
-def load_data(ticker, interval, period, lookback):
+def get_data(ticker, interval, lookback):
+    period = "730d" if interval == "1h" else "max"
     df = yf.download(ticker, session=yfinance_fix.chrome_session, interval=interval, period=period, progress=False)
-    if df.empty:
-        return None
+    if df.empty: return None
     df.columns = df.columns.get_level_values(0)
     df = df.reset_index()
+    
+    # Basis-Änderungen berechnen
+    for c in ['Open', 'High', 'Low', 'Close', 'Volume']:
+        df[f"{c}_Change"] = df[c].pct_change() * 100
     return df.iloc[-lookback:, :].copy()
 
 def add_indicators(df):
@@ -72,7 +58,6 @@ def add_indicators(df):
     df["MACD"] = df["ema_f"] - df["ema_s"]
     df["Signal"] = df["MACD"].ewm(span=MACD_SPAN).mean()
     df["MACD_HIST"] = df["MACD"] - df["Signal"]
-    
     # MFI
     tp = (df["High"] + df["Low"] + df["Close"]) / 3
     mf = tp * df["Volume"]
@@ -80,138 +65,126 @@ def add_indicators(df):
     neg_f = np.where(tp.diff() < 0, mf, 0)
     mfr = pd.Series(pos_f).rolling(MFI_LENGTH).sum() / pd.Series(neg_f).rolling(MFI_LENGTH).sum()
     df["MFI"] = 100 - (100 / (1 + mfr.values))
-    
     # BB
     df["BB_SMA"] = df["Close"].rolling(BB_LENGTH).mean()
     df["BB_STD"] = df["Close"].rolling(BB_LENGTH).std()
-    u_band = df["BB_SMA"] + (BB_STD * df["BB_STD"])
-    l_band = df["BB_SMA"] - (BB_STD * df["BB_STD"])
-    df["BB"] = (u_band - df["Close"]) / (u_band - l_band)
-    df["BB"] = (df["Close"] - l_band) / (u_band - l_band)
-    
+    u_b = df["BB_SMA"] + (2 * df["BB_STD"])
+    l_b = df["BB_SMA"] - (2 * df["BB_STD"])
+    df["BB"] = (df["Close"] - l_b) / (u_b - l_b)
     # RSI
     delta = df["Close"].diff()
     gain = (delta.where(delta > 0, 0)).rolling(window=RSI_LENGTH).mean()
     loss = (-delta.where(delta < 0, 0)).rolling(window=RSI_LENGTH).mean()
-    gain = (delta.where(delta > 0, 0)).ewm(alpha=1/RSI_LENGTH, adjust=False).mean()
-    loss = (-delta.where(delta < 0, 0)).ewm(alpha=1/RSI_LENGTH, adjust=False).mean()
-    rs = gain / loss
-    df["RSI"] = 100 - (100 / (1 + rs))
-    
+    df["RSI"] = 100 - (100 / (1 + (gain/loss)))
     return df.dropna()
 
-def process_regression_data(df, shift):
-    df[f"Close+{shift}"] = df["Close"].shift(-shift)
-    df["Target"] = (df[f"Close+{shift}"] - df["Close"]) / df["Close"] * 100
-    # Down-Sampling gegen Autokorrelation
-    df_sampled = df.iloc[::shift].copy()
-    return df_sampled.dropna()
+# --- HAUPTBEREICH ---
+st.title(f"Quant Analysis: {MODEL_TYPE}")
 
-# --- MAIN UI ---
-
-st.title("Quant Strategy Regression Tool")
-st.markdown(f"Analyse für **{TICKER}** | Intervall: **{INTERVAL}** | Shift: **{SHIFT}**")
-
-if st.button("Analyse Starten"):
-    with st.spinner("Daten werden verarbeitet..."):
-        # 1. Daten laden
-        df_raw = load_data(TICKER, INTERVAL, PERIOD, LOOKBACK)
+if st.sidebar.button("🚀 Analyse Starten"):
+    df_raw = get_data(TICKER, INTERVAL, LOOKBACK)
+    
+    if df_raw is not None:
+        df = add_indicators(df_raw)
         
-        if df_raw is not None:
-            # 2. Indikatoren berechnen
-            df_ind = add_indicators(df_raw)
+        # --- MODUS 1: LINEARE REGREESSION ---
+        if MODEL_TYPE == "Lineare Regression (OLS)":
+            SHIFT = st.sidebar.slider("Vorhersage-Zeitraum (Shift)", 1, 30, 5)
+            df[f"Target"] = (df["Close"].shift(-SHIFT) - df["Close"]) / df["Close"] * 100
+            df_final = df.iloc[::SHIFT].dropna()
             
-            # 3. Target & Down-Sampling
-            df_final = process_regression_data(df_ind, SHIFT)
+            X = sm.add_constant(df_final[STRATEGY])
+            y = df_final["Target"]
+            model = sm.OLS(y, X).fit()
             
-            if len(df_final) < 20:
-                st.error("Zu wenig Datenpunkte nach dem Down-Sampling. Erhöhe den Lookback!")
-            else:
-                # 4. Regression
-                X = df_final[STRATEGY]
-                y = df_final["Target"]
-                X_const = sm.add_constant(X)
-                model = sm.OLS(y, X_const).fit()
-                
-                # --- ERGEBNISSE ANZEIGEN ---
-                col1, col2 = st.columns([2, 1])
-                
-                with col1:
-                    st.subheader("Modell Zusammenfassung")
-                    st.text(model.summary())
-                
-                with col2:
-                    st.subheader("Wichtigste Metriken")
-                    st.metric("R-Squared", f"{model.rsquared:.4f}")
-                    st.metric("Anzahl Beobachtungen", len(df_final))
-                    st.metric("P-Value (Modell)", f"{model.f_pvalue:.6f}")
+            # UI
+            st.subheader("Modell Zusammenfassung (OLS)")
+            st.text(model.summary())
+            
+            c1, c2 = st.columns(2)
+            with c1:
+                st.write("**Actual vs Predicted**")
+                fig, ax = plt.subplots()
+                ax.scatter(model.predict(X), y, alpha=0.5)
+                ax.plot(y, y, color="red")
+                st.pyplot(fig)
+            with c2:
+                st.write("**Residuen Verteilung**")
+                fig, ax = plt.subplots()
+                ax.hist(model.resid, bins=30)
+                st.pyplot(fig)
 
-                # --- VISUALISIERUNG ---
-                st.divider()
-                st.subheader("Visualisierung der Ergebnisse")
-                
-                v_col1, v_col2 = st.columns(2)
-                
-                with v_col1:
-                    # Actual vs Predicted
-                    fig_res, ax_res = plt.subplots()
-                    y_pred = model.predict(X_const)
-                    ax_res.scatter(y_pred, y, alpha=0.5, color="royalblue")
-                    ax_res.plot(y_pred, y_pred, color='red', linestyle='--')
-                    ax_res.set_title("Tatsächlich vs. Vorhergesagt")
-                    ax_res.set_xlabel("Vorhersage (y_pred)")
-                    ax_res.set_ylabel("Tatsächlich (y_actual)")
-                    st.pyplot(fig_res)
-                
-                with v_col2:
-                    # MACD Histogramm Plot
-                    fig_macd, ax_macd = plt.subplots()
-                    colors = ['green' if x >= 0 else 'red' for x in df_ind["MACD_HIST"].tail(100)]
-                    ax_macd.bar(range(100), df_ind["MACD_HIST"].tail(100), color=colors)
-                    ax_macd.set_title("MACD Histogramm (Letzte 100 Perioden)")
-                    st.pyplot(fig_macd)
-
-                # --- VALIDIERUNG ---
-                st.divider()
-                st.subheader("Statistische Validierung (Residuen-Analyse)")
-                
-                # Residuen berechnen
-                df_final["Predictions"] = model.predict(X_const)
-                df_final["Residuals"] = df_final["Target"] - df_final["Predictions"]
-                
-                val_col1, val_col2, val_col3 = st.columns(3)
-                
-                with val_col1:
-                    st.write("**1. Linearität & Homoskedastizität**")
-                    fig_v1, ax_v1 = plt.subplots()
-                    ax_v1.scatter(df_final["Predictions"], df_final["Residuals"], alpha=0.5)
-                    ax_v1.axhline(0, color='red', linestyle='--')
-                    st.pyplot(fig_v1)
-                    
-                with val_col2:
-                    st.write("**2. Unabhängigkeit (Lag Plot)**")
-                    fig_v2, ax_v2 = plt.subplots()
-                    lag_plot(df_final["Residuals"], ax=ax_v2)
-                    st.pyplot(fig_v2)
-                    
-                with val_col3:
-                    st.write("**3. Normalverteilung**")
-                    fig_v3, ax_v3 = plt.subplots()
-                    ax_v3.hist(df_final["Residuals"], bins=30, color="skyblue", edgecolor="black")
-                    st.pyplot(fig_v3)
-                
-                # Rohdaten Download
-                st.divider()
-                st.download_button(
-                    label="Analysierte Daten als CSV exportieren",
-                    data=df_final.to_csv().encode('utf-8'),
-                    file_name=f"{TICKER}_quant_data.csv",
-                    mime="text/csv"
-                )
+        # --- MODUS 2: LOGISTISCHE REGRESSION ---
         else:
-            st.error("Daten konnten nicht geladen werden. Prüfe Ticker und Verbindung.")
+            st.subheader("Optimierung & Klassifizierung (Logit)")
+            
+            # 1. Train-Test Split (Gegen Overfitting)
+            df_shuffled = df.sample(frac=1, random_state=42)
+            split = int(len(df_shuffled) * 0.7)
+            train_df = df_shuffled.iloc[:split].copy()
+            test_df = df_shuffled.iloc[split:].copy()
+            
+            st.write(f"Datensatz geteilt: {len(train_df)} Training, {len(test_df)} Test-Reihen.")
+            
+            # 2. AUC Exploration (Welcher Shift ist optimal?)
+            st.write("🔍 Suche optimalen Vorhersage-Horizont (Shift)...")
+            auc_results = []
+            for s in range(1, 15): # Kleinerer Range für Performance in App
+                temp_df = train_df.copy()
+                temp_df["T"] = (temp_df["Close"].shift(-s) > temp_df["Close"]).astype(int)
+                temp_df = temp_df.dropna()
+                if not temp_df.empty:
+                    X_t = sm.add_constant(temp_df[STRATEGY])
+                    m_t = sm.Logit(temp_df["T"], X_t).fit(disp=0)
+                    auc_results.append({"Shift": s, "AUC": roc_auc_score(temp_df["T"], m_t.predict(X_t))})
+            
+            res_df = pd.DataFrame(auc_results)
+            best_shift = int(res_df.loc[res_df['AUC'].idxmax()]['Shift'])
+            
+            # Plot AUC Entwicklung
+            fig_auc, ax_auc = plt.subplots(figsize=(8,3))
+            ax_auc.plot(res_df["Shift"], res_df["AUC"], marker="o")
+            ax_auc.set_title("AUC Score nach Shift")
+            st.pyplot(fig_auc)
+            
+            st.success(f"Optimaler Shift gefunden: **{best_shift}** (Maximale AUC)")
+            
+            # 3. Finales Modell auf Test-Daten validieren
+            st.divider()
+            st.subheader(f"Finales Modell Performance (Shift={best_shift})")
+            
+            def run_logit(data, s):
+                data["T"] = (data["Close"].shift(-s) > data["Close"]).astype(int)
+                data = data.dropna()
+                X_f = sm.add_constant(data[STRATEGY])
+                m_f = sm.Logit(data["T"], X_f).fit(disp=0)
+                return data, m_f, X_f
+            
+            # Training vs Testing Comparison
+            col_a, col_b = st.columns(2)
+            
+            for d, title, col in zip([train_df, test_df], ["TRAINING SET", "TEST SET (UNSEEN)"], [col_a, col_b]):
+                with col:
+                    st.write(f"**{title}**")
+                    d_final, m_final, X_final = run_logit(d.copy(), best_shift)
+                    probs = m_final.predict(X_final)
+                    preds = (probs > 0.5).astype(int)
+                    
+                    # Metrics
+                    fpr, tpr, _ = roc_curve(d_final["T"], probs)
+                    st.write(f"AUC: {auc(fpr, tpr):.4f}")
+                    
+                    # Confusion Matrix Plot
+                    fig_cm, ax_cm = plt.subplots(figsize=(4,3))
+                    sns.heatmap(confusion_matrix(d_final["T"], preds), annot=True, fmt="d", cmap="Blues", ax=ax_cm)
+                    ax_cm.set_xlabel("Predicted")
+                    ax_cm.set_ylabel("Actual")
+                    st.pyplot(fig_cm)
+
+    else:
+        st.error("Daten konnten nicht geladen werden.")
 else:
-    st.info("Klicke auf 'Analyse Starten', um die Regression mit den aktuellen Parametern durchzuführen.")
+    st.info("Klicken Sie auf 'Analyse Starten', um die Berechnungen zu beginnen.")
 
 # 1.  **Installation:** Stellen Sie sicher, dass Sie `streamlit` installiert haben:
 #     pip install 
