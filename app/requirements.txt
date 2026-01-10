@@ -1,0 +1,14 @@
+Kern-Python-Pakete (werden oft schon von der Umgebung bereitgestellt, hier zur Sicherheit)
+
+streamlit
+pandas
+numpy
+matplotlib
+statsmodels
+seaborn
+scikit-learn
+
+Datenabruf und Fixes
+
+yfinance
+curl_cffi
