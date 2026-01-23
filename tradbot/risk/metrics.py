@@ -47,8 +47,6 @@ def calculate_sharpe_ratio(
     std = returns.std()
     annualized_std = std * np.sqrt(periods_per_year)
     annualized_sharpe = (annualized_return - risk_free_rate) / annualized_std
-
-    print(f"This is the Sharpe Ratio: {annualized_sharpe}")
     return annualized_sharpe
 
 """
@@ -80,8 +78,6 @@ def calculate_max_drawdown(
     rolling_max = prices.cummax()
     drawdown = (prices - rolling_max) / rolling_max
     max_drawdown = drawdown.min()
-
-    print(f"This is the Max Drawdown: {max_drawdown:.4f}")
     return max_drawdown
 
 """
@@ -110,8 +106,6 @@ def calculate_var(
 ) -> float:
     alpha = 1 - confidence_level
     var = np.percentile(returns, alpha * 100)
-
-    print(f"This is the Historical VaR: {var}")
     return var
 
 """

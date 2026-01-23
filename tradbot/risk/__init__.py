@@ -1,7 +1,5 @@
 """
 Risk Management Module
-
-This module provides risk metrics and analysis tools for portfolio evaluation.
 """
 
 from .metrics import (
