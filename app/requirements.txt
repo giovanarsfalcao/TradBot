@@ -1,11 +1,20 @@
+# Core
 streamlit
 pandas
 numpy
-yfinance
 matplotlib
-statsmodels
 seaborn
-scikit-learn
+
+# Data
+yfinance
 curl_cffi
-# Altair ist in Streamlit enthalten, aber wir erzwingen eine saubere Neuinstallation
+
+# ML/Stats
+statsmodels
+scikit-learn
+
+# Portfolio Optimization
+pyportfolioopt
+
+# Streamlit compatibility
 altair<5

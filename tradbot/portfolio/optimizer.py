@@ -122,15 +122,19 @@ def get_efficient_frontier(
     mu = calculate_expected_returns(prices)
     S = calculate_covariance_matrix(prices)
     min_ret = mu.min()
-    max_ret = mu.max()
+    max_ret = mu.max() * 0.999  # Kleiner Buffer - PyPortfolioOpt braucht target < max
 
-    returns = [] # [] Liste (list): sie ist veränderbar (mutable) und speichert Elemente in einer festen Reihenfolge, auf die du über liste[0] zugreifst
+    returns = []
     volatilities = []
 
     for target in np.linspace(min_ret, max_ret, n_points):
-        ef = EfficientFrontier(mu, S)
-        ef.efficient_return(target)
-        ret, vol, _ = ef.portfolio_performance()
-        returns.append(ret)
-        volatilities.append(vol)
+        try:
+            ef = EfficientFrontier(mu, S)
+            ef.efficient_return(target)
+            ret, vol, _ = ef.portfolio_performance()
+            returns.append(ret)
+            volatilities.append(vol)
+        except ValueError:
+            # Skip invalid targets
+            continue
     return pd.DataFrame({'return': returns, 'volatility': volatilities})

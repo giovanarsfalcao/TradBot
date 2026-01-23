@@ -1,324 +1,428 @@
 import streamlit as st
-import numpy as np 
+import numpy as np
 import pandas as pd
 from pandas.plotting import lag_plot
 import yfinance as yf
 import matplotlib.pyplot as plt
 import statsmodels.api as sm
 import seaborn as sns
-from sklearn.metrics import confusion_matrix, roc_curve, auc, roc_auc_score
-import yfinance_fix # Voraussetzung: Datei liegt im selben Ordner
+from sklearn.metrics import confusion_matrix, roc_curve, roc_auc_score
+import yfinance_fix
 
-# --- SEITENKONFIGURATION ---
-st.set_page_config(page_title="Quant Analysis Ultimate", layout="wide")
+# Import tradbot modules
+import sys
+sys.path.append('..')
+from tradbot.strategy import TechnicalIndicators
+from tradbot.risk import calculate_sharpe_ratio, calculate_max_drawdown, calculate_var
+from tradbot.portfolio import optimize_max_sharpe, optimize_min_volatility, get_efficient_frontier
 
-# --- SIDEBAR ---
-st.sidebar.header("📊 Daten-Konfiguration")
-TICKER = st.sidebar.text_input("Ticker Symbol", value="SPY")
+# =============================================================================
+# CONFIGURATION
+# =============================================================================
+
+st.set_page_config(page_title="Quant Trading Dashboard", layout="wide")
+
+# =============================================================================
+# SIDEBAR
+# =============================================================================
+
+st.sidebar.header("Daten")
+TICKER = st.sidebar.text_input("Ticker", value="SPY")
 INTERVAL = st.sidebar.selectbox("Intervall", ["1d", "1h", "15m", "5m"], index=0)
-LOOKBACK = st.sidebar.number_input("Lookback (Zeilen)", value=5000, step=100)
-
-MODEL_TYPE = st.sidebar.radio("Modell", ["Lineare Regression (OLS)", "Logistische Regression (Logit)"])
+LOOKBACK = st.sidebar.number_input("Lookback", value=5000, step=100)
 
 st.sidebar.divider()
-st.sidebar.header("⚙️ Indikator-Parameter")
+ANALYSIS = st.sidebar.radio(
+    "Analyse",
+    ["Indikatoren", "Lineare Regression", "Logistische Regression", "Risk Metrics", "Portfolio Optimization"]
+)
 
-with st.sidebar.expander("MACD Settings"):
+st.sidebar.divider()
+st.sidebar.header("Indikator Parameter")
+
+with st.sidebar.expander("MACD"):
     MACD_FAST = st.number_input("Fast", 12)
     MACD_SLOW = st.number_input("Slow", 27)
     MACD_SPAN = st.number_input("Signal", 9)
 
-with st.sidebar.expander("MFI Settings"):
-    MFI_LENGTH = st.number_input("MFI Len", 14)
-    OVERBOUGHT = st.number_input("Overbought", 70)
-    OVERSOLD = st.number_input("Oversold", 30)
+with st.sidebar.expander("MFI"):
+    MFI_LENGTH = st.number_input("Length", 14)
 
 with st.sidebar.expander("Bollinger Bands"):
-    BB_LENGTH = st.number_input("BB Len", 20)
-    STD_DEV = st.number_input("Std Dev", 2)
+    BB_LENGTH = st.number_input("BB Length", 20)
+    BB_STD = st.number_input("Std Dev", 2)
 
-with st.sidebar.expander("RSI Settings"):
-    RSI_LENGTH = st.number_input("RSI Len", 14)
-    RSI_OB = st.number_input("RSI OB", 70)
-    RSI_OS = st.number_input("RSI OS", 30)
+with st.sidebar.expander("RSI"):
+    RSI_LENGTH = st.number_input("RSI Length", 14)
 
-STRATEGY = st.sidebar.multiselect("Features", ["MACD_HIST", "MFI", "BB", "RSI", "Volume_Change"], default=["MACD_HIST", "MFI", "BB", "RSI"])
+FEATURES = st.sidebar.multiselect(
+    "Features",
+    ["MACD_HIST", "MFI", "BB", "RSI"],
+    default=["MACD_HIST", "MFI", "BB", "RSI"]
+)
 
-# --- DATEN & INDIKATOREN ---
+# =============================================================================
+# DATA LOADING
+# =============================================================================
 
 @st.cache_data
-def get_data(ticker, interval, lookback):
+def load_data(ticker, interval, lookback):
+    """Load price data from Yahoo Finance."""
     period = "730d" if interval == "1h" else "max"
-    df = yf.download(ticker, session=yfinance_fix.chrome_session, interval=interval, period=period, progress=False)
-    if df.empty: return None
+    df = yf.download(
+        ticker,
+        session=yfinance_fix.chrome_session,
+        interval=interval,
+        period=period,
+        progress=False
+    )
+    if df.empty:
+        return None
     df.columns = df.columns.get_level_values(0)
     df = df.reset_index()
-    for c in ['Open', 'High', 'Low', 'Close', 'Volume']:
-        df[f"{c}_Change"] = df[c].pct_change() * 100
     return df.iloc[-lookback:, :].copy()
 
-def add_MACD(df, fast, slow, span):
-    df[f"{fast}_ema"] = df["Close"].ewm(span=fast).mean()
-    df[f"{slow}_ema"] = df["Close"].ewm(span=slow).mean()
-    df["MACD"] = df[f"{fast}_ema"] - df[f"{slow}_ema"]
-    df["Signal"] = df["MACD"].ewm(span=span).mean()
-    df["MACD_HIST"] = df["MACD"] - df["Signal"]
-    return df
 
-def add_MFI(df, length, ob, os):
-    tp = (df["High"] + df["Low"] + df["Close"]) / 3
-    mf = tp * df["Volume"]
-    pos_f = np.where(tp.diff() > 0, mf, 0)
-    neg_f = np.where(tp.diff() < 0, mf, 0)
-    mfr = pd.Series(pos_f).rolling(length).sum() / pd.Series(neg_f).rolling(length).sum()
-    df["MFI"] = 100 - (100 / (1 + mfr.values))
-    return df
+def add_indicators(df):
+    """Add technical indicators using TechnicalIndicators class."""
+    ti = TechnicalIndicators(df)
+    ti.add_macd(MACD_FAST, MACD_SLOW, MACD_SPAN)
+    ti.add_mfi(MFI_LENGTH)
+    ti.add_bb(BB_LENGTH, BB_STD)
+    ti.add_rsi(RSI_LENGTH)
+    return ti.dropna().get_df()
 
-def add_BB(df, length, std):
-    df["BB_SMA"] = df["Close"].rolling(length).mean()
-    df["BB_STD"] = df["Close"].rolling(length).std()
-    df["Upper"] = df["BB_SMA"] + (std * df["BB_STD"])
-    df["Lower"] = df["BB_SMA"] - (std * df["BB_STD"])
-    # Normalized BB value
-    df["BB"] = (df["Close"] - df["Lower"]) / (df["Upper"] - df["Lower"])
-    return df
-
-def add_RSI(df, length):
-    delta = df["Close"].diff()
-    gain = (delta.where(delta > 0, 0)).rolling(length).mean()
-    loss = (-delta.where(delta < 0, 0)).rolling(length).mean()
-    rs = gain / loss
-    df["RSI"] = 100 - (100 / (1 + rs))
-    return df
-
-def prepare_data(df):
-    df = add_MACD(df, MACD_FAST, MACD_SLOW, MACD_SPAN)
-    df = add_MFI(df, MFI_LENGTH, OVERBOUGHT, OVERSOLD)
-    df = add_BB(df, BB_LENGTH, STD_DEV)
-    df = add_RSI(df, RSI_LENGTH)
-    return df.dropna()
-
-# --- PLOTTING FUNKTIONEN ---
+# =============================================================================
+# PLOTTING FUNCTIONS
+# =============================================================================
 
 def plot_indicators(df):
-    st.subheader("📈 Technische Indikatoren Visualisierung")
-    
-    # Letzte 150 Perioden für bessere Sichtbarkeit
+    """Plot technical indicators in tabs."""
     subset = df.tail(150).reset_index(drop=True)
-    
+
     tab1, tab2, tab3, tab4 = st.tabs(["MACD", "MFI", "Bollinger Bands", "RSI"])
-    
+
     with tab1:
         fig, ax = plt.subplots(figsize=(10, 4))
         colors = ['green' if x >= 0 else 'red' for x in subset["MACD_HIST"]]
-        ax.bar(range(len(subset)), subset["MACD_HIST"], color=colors, alpha=0.5, label="Hist")
+        ax.bar(range(len(subset)), subset["MACD_HIST"], color=colors, alpha=0.5)
         ax.plot(subset["MACD"], label="MACD", color="blue")
         ax.plot(subset["Signal"], label="Signal", color="orange")
-        ax.set_title(f"MACD ({MACD_FAST}, {MACD_SLOW}, {MACD_SPAN})")
         ax.legend()
+        ax.set_title(f"MACD ({MACD_FAST}, {MACD_SLOW}, {MACD_SPAN})")
         st.pyplot(fig)
 
     with tab2:
         fig, ax = plt.subplots(figsize=(10, 4))
-        ax.plot(subset["MFI"], color="purple", label="MFI")
-        ax.axhline(OVERBOUGHT, color="red", linestyle="--")
-        ax.axhline(OVERSOLD, color="green", linestyle="--")
+        ax.plot(subset["MFI"], color="purple")
+        ax.axhline(70, color="red", linestyle="--")
+        ax.axhline(30, color="green", linestyle="--")
         ax.set_title(f"MFI ({MFI_LENGTH})")
         st.pyplot(fig)
 
     with tab3:
         fig, ax = plt.subplots(figsize=(10, 4))
-        ax.plot(subset["Close"], label="Close", color="black", alpha=0.7)
-        ax.plot(subset["Upper"], label="Upper", color="red", linestyle="--", alpha=0.5)
-        ax.plot(subset["Lower"], label="Lower", color="green", linestyle="--", alpha=0.5)
-        ax.fill_between(range(len(subset)), subset["Upper"], subset["Lower"], color="gray", alpha=0.1)
-        ax.set_title(f"Bollinger Bands ({BB_LENGTH}, {STD_DEV})")
+        ax.plot(subset["Close"], color="black", alpha=0.7)
+        ax.plot(subset["Upper"], color="red", linestyle="--", alpha=0.5)
+        ax.plot(subset["Lower"], color="green", linestyle="--", alpha=0.5)
+        ax.fill_between(range(len(subset)), subset["Upper"], subset["Lower"], alpha=0.1)
+        ax.set_title(f"Bollinger Bands ({BB_LENGTH}, {BB_STD})")
         st.pyplot(fig)
 
     with tab4:
         fig, ax = plt.subplots(figsize=(10, 4))
-        ax.plot(subset["RSI"], color="blue", label="RSI")
-        ax.axhline(RSI_OB, color="red", linestyle="--")
-        ax.axhline(RSI_OS, color="green", linestyle="--")
+        ax.plot(subset["RSI"], color="blue")
+        ax.axhline(70, color="red", linestyle="--")
+        ax.axhline(30, color="green", linestyle="--")
         ax.set_title(f"RSI ({RSI_LENGTH})")
         st.pyplot(fig)
 
-# --- LOGIT HELPERS ---
+# =============================================================================
+# ANALYSIS FUNCTIONS
+# =============================================================================
 
-def explore_shift_auc(df_train, features):
+def run_linear_regression(df, features, shift):
+    """Run OLS Linear Regression."""
+    df_ols = df.copy()
+    df_ols["Target"] = (df_ols["Close"].shift(-shift) - df_ols["Close"]) / df_ols["Close"] * 100
+    df_ols = df_ols.iloc[::shift].dropna()
+
+    X = sm.add_constant(df_ols[features])
+    y = df_ols["Target"]
+    model = sm.OLS(y, X).fit()
+
+    return model, y, model.predict(X)
+
+
+def run_logistic_regression(df, features, shift):
+    """Run Logistic Regression."""
+    df_log = df.copy()
+    df_log["Target"] = (df_log["Close"].shift(-shift) > df_log["Close"]).astype(int)
+    df_log = df_log.dropna()
+
+    X = sm.add_constant(df_log[features])
+    y = df_log["Target"]
+    model = sm.Logit(y, X).fit(disp=0)
+
+    return model, y, model.predict(X)
+
+
+def find_optimal_shift(df, features, max_shift=20):
+    """Find optimal shift by AUC."""
     results = []
-    # Teste Shift 1 bis 20
-    shifts = range(1, 21)
-    
-    for s in shifts:
-        temp = df_train.copy()
-        temp["T"] = (temp["Close"].shift(-s) > temp["Close"]).astype(int)
-        temp = temp.dropna()
-        if len(temp) > 50:
-            X = sm.add_constant(temp[features])
-            try:
-                m = sm.Logit(temp["T"], X).fit(disp=0)
-                preds = m.predict(X)
-                score = roc_auc_score(temp["T"], preds)
-                results.append({"Shift": s, "AUC": score})
-            except:
-                pass
+    for s in range(1, max_shift + 1):
+        try:
+            _, y, probs = run_logistic_regression(df, features, s)
+            auc = roc_auc_score(y, probs)
+            results.append({"Shift": s, "AUC": auc})
+        except:
+            pass
     return pd.DataFrame(results)
 
-def run_logit_model(df, features, target_col):
-    df_clean = df.dropna(subset=features + [target_col])
-    X = sm.add_constant(df_clean[features])
-    y = df_clean[target_col]
-    model = sm.Logit(y, X).fit(disp=0)
-    probs = model.predict(X)
-    return df_clean, y, probs
-
-# --- HAUPTPROGRAMM ---
+# =============================================================================
+# MAIN APP
+# =============================================================================
 
 st.title(f"Quant Trading Dashboard: {TICKER}")
 
-if st.sidebar.button("🚀 Analyse Starten"):
-    with st.spinner("Lade Daten & Berechne Indikatoren..."):
-        df_raw = get_data(TICKER, INTERVAL, LOOKBACK)
-        
-        if df_raw is not None:
-            # 1. Indikatoren berechnen
-            df_ind = prepare_data(df_raw)
-            
-            # 2. Indikatoren Visualisieren
-            plot_indicators(df_ind)
-            
+if st.sidebar.button("Analyse Starten"):
+
+    # Load Data
+    with st.spinner("Lade Daten..."):
+        df_raw = load_data(TICKER, INTERVAL, LOOKBACK)
+
+    if df_raw is None:
+        st.error("Fehler beim Laden der Daten")
+        st.stop()
+
+    # Add Indicators
+    df = add_indicators(df_raw)
+    st.success(f"{len(df)} Datenpunkte geladen")
+
+    # ==========================================================================
+    # INDIKATOREN
+    # ==========================================================================
+    if ANALYSIS == "Indikatoren":
+        st.header("Technische Indikatoren")
+        plot_indicators(df)
+
+    # ==========================================================================
+    # LINEARE REGRESSION
+    # ==========================================================================
+    elif ANALYSIS == "Lineare Regression":
+        st.header("Lineare Regression (OLS)")
+
+        SHIFT = st.slider("Shift (Tage)", 1, 30, 5)
+        model, y, preds = run_linear_regression(df, FEATURES, SHIFT)
+
+        st.text(model.summary())
+
+        # Validation Plots
+        resid = y - preds
+        c1, c2, c3 = st.columns(3)
+
+        with c1:
+            fig, ax = plt.subplots()
+            ax.scatter(preds, resid, alpha=0.5)
+            ax.axhline(0, color='red')
+            ax.set_title("Linearität")
+            st.pyplot(fig)
+
+        with c2:
+            fig, ax = plt.subplots()
+            lag_plot(resid, ax=ax)
+            ax.set_title("Unabhängigkeit")
+            st.pyplot(fig)
+
+        with c3:
+            fig, ax = plt.subplots()
+            ax.hist(resid, bins=30)
+            ax.set_title("Normalverteilung")
+            st.pyplot(fig)
+
+    # ==========================================================================
+    # LOGISTISCHE REGRESSION
+    # ==========================================================================
+    elif ANALYSIS == "Logistische Regression":
+        st.header("Logistische Regression")
+
+        # Train/Test Split
+        df_shuffled = df.sample(frac=1, random_state=42).reset_index(drop=True)
+        split_idx = int(len(df_shuffled) * 0.7)
+        train_df = df_shuffled.iloc[:split_idx].copy()
+        test_df = df_shuffled.iloc[split_idx:].copy()
+
+        st.info(f"Train: {len(train_df)} | Test: {len(test_df)}")
+
+        # Find Optimal Shift
+        st.subheader("AUC Optimierung")
+        auc_results = find_optimal_shift(train_df, FEATURES)
+
+        if not auc_results.empty:
+            best_shift = int(auc_results.sort_values("AUC", ascending=False).iloc[0]["Shift"])
+            st.success(f"Optimaler Shift: {best_shift}")
+
+            fig, ax = plt.subplots(figsize=(10, 3))
+            ax.plot(auc_results["Shift"], auc_results["AUC"], marker="o")
+            ax.set_xlabel("Shift")
+            ax.set_ylabel("AUC")
+            ax.grid(True)
+            st.pyplot(fig)
+
+            # Train Model
+            model, y_train, prob_train = run_logistic_regression(train_df, FEATURES, best_shift)
+
+            # Predict on Test
+            test_df["Target"] = (test_df["Close"].shift(-best_shift) > test_df["Close"]).astype(int)
+            test_df = test_df.dropna()
+            X_test = sm.add_constant(test_df[FEATURES])
+            y_test = test_df["Target"]
+            prob_test = model.predict(X_test)
+
+            # Compare Train vs Test
             st.divider()
-            
-            # 3. Modellierung
-            if MODEL_TYPE == "Lineare Regression (OLS)":
-                st.header("Lineare Regression")
-                SHIFT = st.sidebar.slider("Manueller Shift", 1, 30, 5)
-                
-                # Target und Downsampling
-                df_ols = df_ind.copy()
-                df_ols["Target"] = (df_ols["Close"].shift(-SHIFT) - df_ols["Close"]) / df_ols["Close"] * 100
-                df_ols = df_ols.iloc[::SHIFT].dropna()
-                
-                X = sm.add_constant(df_ols[STRATEGY])
-                y = df_ols["Target"]
-                model = sm.OLS(y, X).fit()
-                
-                st.text(model.summary())
-                
-                # Validation Plots
-                c1, c2, c3 = st.columns(3)
-                preds = model.predict(X)
-                resid = y - preds
-                
-                with c1:
-                    fig, ax = plt.subplots()
-                    ax.scatter(preds, resid, alpha=0.5)
-                    ax.axhline(0, color='red')
-                    ax.set_title("Linearität")
-                    st.pyplot(fig)
-                with c2:
-                    fig, ax = plt.subplots()
-                    lag_plot(resid, ax=ax)
-                    ax.set_title("Unabhängigkeit")
-                    st.pyplot(fig)
-                with c3:
-                    fig, ax = plt.subplots()
-                    ax.hist(resid, bins=30)
-                    ax.set_title("Normalverteilung")
+            st.subheader("Train vs Test Vergleich")
+
+            col1, col2 = st.columns(2)
+
+            for col, (y_true, probs, title) in zip(
+                [col1, col2],
+                [(y_train, prob_train, "Train"), (y_test, prob_test, "Test")]
+            ):
+                with col:
+                    st.markdown(f"### {title}")
+
+                    # ROC
+                    fpr, tpr, _ = roc_curve(y_true, probs)
+                    auc_score = roc_auc_score(y_true, probs)
+
+                    fig, ax = plt.subplots(figsize=(5, 3))
+                    ax.plot(fpr, tpr, label=f"AUC={auc_score:.2f}")
+                    ax.plot([0, 1], [0, 1], linestyle="--")
+                    ax.legend()
+                    ax.set_title("ROC Curve")
                     st.pyplot(fig)
 
-            else:
-                # LOGISTISCHE REGRESSION
-                st.header("Logistische Regression & Machine Learning")
-                
-                # A) Train Test Split (Random)
-                df_shuffled = df_ind.sample(frac=1, random_state=42).reset_index(drop=True)
-                split_idx = int(len(df_shuffled) * 0.7)
-                train_df = df_shuffled.iloc[:split_idx].copy()
-                test_df = df_shuffled.iloc[split_idx:].copy()
-                
-                st.info(f"Split: {len(train_df)} Training | {len(test_df)} Test Zeilen")
-                
-                # B) AUC Optimierung (Shift Suche auf Training Set)
-                st.subheader("1. Optimierung: AUC by Shift (Training Set)")
-                auc_res = explore_shift_auc(train_df, STRATEGY)
-                
-                if not auc_res.empty:
-                    best_shift = int(auc_res.sort_values(by="AUC", ascending=False).iloc[0]["Shift"])
-                    st.success(f"Optimaler Shift gefunden: **{best_shift}**")
-                    
-                    fig_auc, ax_auc = plt.subplots(figsize=(10, 3))
-                    ax_auc.plot(auc_res["Shift"], auc_res["AUC"], marker="o", color="purple")
-                    ax_auc.set_title("AUC Score vs. Shift")
-                    ax_auc.set_xlabel("Shift")
-                    ax_auc.set_ylabel("AUC")
-                    ax_auc.grid(True)
-                    st.pyplot(fig_auc)
-                    
-                    # C) Modell Training & Testing mit optimalem Shift
-                    st.divider()
-                    st.subheader(f"Vergleich: Training vs. Testing (Shift {best_shift})")
-                    
-                    # Target berechnen für beide Sets
-                    train_df["Target"] = (train_df["Close"].shift(-best_shift) > train_df["Close"]).astype(int)
-                    test_df["Target"] = (test_df["Close"].shift(-best_shift) > test_df["Close"]).astype(int)
-                    
-                    # Training ausführen
-                    train_clean, y_train, prob_train = run_logit_model(train_df, STRATEGY, "Target")
-                    # Testing ausführen (Modell auf Testdaten anwenden wäre korrekter, hier vereinfacht neu gefittet für Analyse-Zwecke des Users)
-                    # Besser: Modell von Train nehmen und auf Test predicten
-                    X_train = sm.add_constant(train_clean[STRATEGY])
-                    model_final = sm.Logit(y_train, X_train).fit(disp=0)
-                    
-                    # Predict Test
-                    test_clean = test_df.dropna(subset=STRATEGY + ["Target"])
-                    X_test = sm.add_constant(test_clean[STRATEGY])
-                    y_test = test_clean["Target"]
-                    prob_test = model_final.predict(X_test)
-                    
-                    # --- 4 GRAPHEN VERGLEICH ---
-                    c_train, c_test = st.columns(2)
-                    
-                    def plot_4_graphs(y_true, y_prob, title_prefix):
-                        # 1. Distribution
-                        fig1, ax1 = plt.subplots(figsize=(5,3))
-                        ax1.hist(y_prob, bins=30, color="gray")
-                        ax1.set_title(f"{title_prefix}: Distribution")
-                        st.pyplot(fig1)
-                        
-                        # 2. ROC
-                        fpr, tpr, _ = roc_curve(y_true, y_prob)
-                        score = roc_auc_score(y_true, y_prob)
-                        fig2, ax2 = plt.subplots(figsize=(5,3))
-                        ax2.plot(fpr, tpr, color="orange", label=f"AUC={score:.2f}")
-                        ax2.plot([0,1], [0,1], linestyle="--")
-                        ax2.legend()
-                        ax2.set_title(f"{title_prefix}: ROC Curve")
-                        st.pyplot(fig2)
-                        
-                        # 3. Confusion Matrix
-                        y_pred = (y_prob > 0.5).astype(int)
-                        cm = confusion_matrix(y_true, y_pred)
-                        fig3, ax3 = plt.subplots(figsize=(5,3))
-                        sns.heatmap(cm, annot=True, fmt="d", cmap="Blues", ax=ax3)
-                        ax3.set_title(f"{title_prefix}: Confusion Matrix")
-                        st.pyplot(fig3)
+                    # Confusion Matrix
+                    cm = confusion_matrix(y_true, (probs > 0.5).astype(int))
+                    fig, ax = plt.subplots(figsize=(5, 3))
+                    sns.heatmap(cm, annot=True, fmt="d", cmap="Blues", ax=ax)
+                    ax.set_title("Confusion Matrix")
+                    st.pyplot(fig)
 
-                    with c_train:
-                        st.markdown("### 🏋️ Training Data")
-                        plot_4_graphs(y_train, prob_train, "Train")
-                        
-                    with c_test:
-                        st.markdown("### 🧪 Test Data (Unseen)")
-                        plot_4_graphs(y_test, prob_test, "Test")
+    # ==========================================================================
+    # RISK METRICS
+    # ==========================================================================
+    elif ANALYSIS == "Risk Metrics":
+        st.header("Risk Metrics")
 
-                else:
-                    st.error("Konnte keine validen AUC-Werte berechnen.")
-        else:
-            st.error("Fehler beim Daten-Download.")
+        returns = df["Close"].pct_change().dropna()
+        prices = df["Close"].dropna()
 
-# 1.  **Installation:** Stellen Sie sicher, dass Sie `streamlit` installiert haben:
-#     pip install 
-# 2.  **App starten:** Öffnen Sie Ihr Terminal, navigieren Sie zu dem Ordner, in dem die Datei liegt, und führen Sie aus:
-#     streamlit run app.py
+        # Metrics
+        sharpe = calculate_sharpe_ratio(returns)
+        max_dd = calculate_max_drawdown(prices)
+        var_95 = calculate_var(returns, 0.95)
+        var_99 = calculate_var(returns, 0.99)
+
+        col1, col2, col3, col4 = st.columns(4)
+        col1.metric("Sharpe Ratio", f"{sharpe:.2f}")
+        col2.metric("Max Drawdown", f"{max_dd:.2%}")
+        col3.metric("VaR (95%)", f"{var_95:.2%}")
+        col4.metric("VaR (99%)", f"{var_99:.2%}")
+
+        # Drawdown Chart
+        st.subheader("Drawdown")
+        rolling_max = prices.cummax()
+        drawdown = (prices - rolling_max) / rolling_max
+
+        fig, ax = plt.subplots(figsize=(12, 4))
+        ax.fill_between(range(len(drawdown)), drawdown * 100, 0, color='red', alpha=0.3)
+        ax.set_ylabel("Drawdown (%)")
+        ax.grid(True, alpha=0.3)
+        st.pyplot(fig)
+
+        # Return Distribution
+        st.subheader("Return Verteilung")
+        fig, ax = plt.subplots(figsize=(10, 4))
+        ax.hist(returns * 100, bins=50, color='steelblue', alpha=0.7)
+        ax.axvline(var_95 * 100, color='orange', linestyle='--', label=f'VaR 95%')
+        ax.axvline(var_99 * 100, color='red', linestyle='--', label=f'VaR 99%')
+        ax.legend()
+        ax.set_xlabel("Daily Return (%)")
+        st.pyplot(fig)
+
+    # ==========================================================================
+    # PORTFOLIO OPTIMIZATION
+    # ==========================================================================
+    elif ANALYSIS == "Portfolio Optimization":
+        st.header("Portfolio Optimization")
+
+        portfolio_tickers = st.text_input(
+            "Tickers (comma separated)",
+            value="AAPL, MSFT, GOOGL, AMZN, META"
+        )
+        tickers = [t.strip() for t in portfolio_tickers.split(",")]
+
+        with st.spinner("Lade Portfolio Daten..."):
+            prices = yf.download(
+                tickers,
+                period="2y",
+                session=yfinance_fix.chrome_session,
+                progress=False
+            )['Close']
+
+        if prices.empty:
+            st.error("Keine Daten")
+            st.stop()
+
+        try:
+            weights_sharpe, perf_sharpe = optimize_max_sharpe(prices)
+            weights_minvol, perf_minvol = optimize_min_volatility(prices)
+
+            col1, col2 = st.columns(2)
+
+            with col1:
+                st.subheader("Max Sharpe")
+                st.metric("Return", f"{perf_sharpe[0]:.2%}")
+                st.metric("Volatility", f"{perf_sharpe[1]:.2%}")
+                st.metric("Sharpe", f"{perf_sharpe[2]:.2f}")
+
+                w = pd.Series(weights_sharpe)
+                w = w[w > 0.01]
+                fig, ax = plt.subplots()
+                ax.barh(w.index, w.values * 100, color='steelblue')
+                ax.set_xlabel("Weight (%)")
+                st.pyplot(fig)
+
+            with col2:
+                st.subheader("Min Volatility")
+                st.metric("Return", f"{perf_minvol[0]:.2%}")
+                st.metric("Volatility", f"{perf_minvol[1]:.2%}")
+                st.metric("Sharpe", f"{perf_minvol[2]:.2f}")
+
+                w = pd.Series(weights_minvol)
+                w = w[w > 0.01]
+                fig, ax = plt.subplots()
+                ax.barh(w.index, w.values * 100, color='green')
+                ax.set_xlabel("Weight (%)")
+                st.pyplot(fig)
+
+            # Efficient Frontier
+            st.divider()
+            st.subheader("Efficient Frontier")
+
+            frontier = get_efficient_frontier(prices, n_points=30)
+
+            fig, ax = plt.subplots(figsize=(10, 6))
+            ax.plot(frontier['volatility'] * 100, frontier['return'] * 100, 'b-', lw=2)
+            ax.scatter(perf_sharpe[1] * 100, perf_sharpe[0] * 100, marker='*', s=300, c='red', label='Max Sharpe')
+            ax.scatter(perf_minvol[1] * 100, perf_minvol[0] * 100, marker='o', s=200, c='green', label='Min Vol')
+            ax.set_xlabel("Volatility (%)")
+            ax.set_ylabel("Return (%)")
+            ax.legend()
+            ax.grid(True, alpha=0.3)
+            st.pyplot(fig)
+
+        except Exception as e:
+            st.error(f"Error: {e}")
