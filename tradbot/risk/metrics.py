@@ -158,6 +158,8 @@ def calculate_all_risk_metrics(
 
 """
 Calculate Annualized Returns:
+Beantwortet die Frage:
+- Wie viel Geld verdient man im Durchschnitt pro Jahr, wenn man eine Anlage hält?
 
 Parametern:
 - returns: pd.Series or np.ndarray
@@ -180,6 +182,8 @@ def calculate_annualized_return(
 
 """
 Calculate annualized Volatility:
+Beantwortet die Frage:
+- Wie stark schwanken die Renditen einer Anlage im Jahresverlauf?
 
 Parametern:
 - returns: pd.Series or np.ndarray

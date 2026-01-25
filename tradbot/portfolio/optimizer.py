@@ -21,6 +21,8 @@ from pypfopt import EfficientFrontier
 
 """
 Expected Returns berechnen:
+- Ziel: Erwartete Renditen der Assets im Portfolio
+- Beantwortet: "Welche Rendite kann ich von jedem Asset erwarten?"
 - Input: df mit historischen Preisen 
 - Output: Series mit erwarteten jährlichen Returns pro Ticker
 - Methode: mean_historical_return (Durchschnitt * 252)
@@ -33,6 +35,8 @@ def calculate_expected_returns(prices: pd.DataFrame) -> pd.Series:
 
 """
 Kovarianzmatrix berechnen:
+- Ziel: Misst, wie sich Assets zusammen bewegen
+- Beantwortet die Frage: "Welche Gewichtung gibt mir die höchste Rendite pro Risikoeinheit?"
 - Input: DataFrame mit historischen Preisen
 - Output: DataFrame (Matrix) mit Kovarianzen zwischen Assets
 - Misst: Wie bewegen sich Assets zusammen?
@@ -104,6 +108,9 @@ Efficient Frontier generieren:
 - Ziel: Kurve aller optimalen Portfolios visualisieren
 - X-Achse: Volatilität (Risiko)
 - Y-Achse: Expected Return
+
+Beantwortet die Frage:
+"Wie sieht die Risiko-Rendite-Verteilung meiner Portfolios aus?"
 
 Input:
 - prices: df mit historischen Preisen
