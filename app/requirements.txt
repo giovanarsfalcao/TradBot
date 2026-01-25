@@ -19,5 +19,8 @@ pyportfolioopt
 # Database
 sqlalchemy
 
+# Excel Export
+openpyxl
+
 # Streamlit compatibility
 altair<5
