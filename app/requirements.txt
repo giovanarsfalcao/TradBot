@@ -16,5 +16,8 @@ scikit-learn
 # Portfolio Optimization
 pyportfolioopt
 
+# Database
+sqlalchemy
+
 # Streamlit compatibility
 altair<5
