@@ -9,6 +9,9 @@ seaborn
 yfinance
 curl_cffi
 
+# Interactive Brokers
+ib_insync
+
 # ML/Stats
 statsmodels
 scikit-learn
