@@ -94,3 +94,56 @@ def generate_signal(df: pd.DataFrame, shift: int = 5,
         "shift": shift,
         "reason": reason,
     }
+
+
+def generate_strategy(df: pd.DataFrame, shift: int = 5,
+                      threshold: float = 0.55,
+                      train_size: float = 0.7) -> pd.DataFrame:
+    """
+    Vectorized LogReg strategy for backtesting.
+
+    Train on first train_size fraction, predict on the rest.
+    Train period has Strategy=0 (no trading). Only test period has real positions.
+
+    Returns DataFrame with 'Strategy' column:
+        +1 = Long  (P(Up) > threshold)
+        -1 = Short (P(Up) < 1 - threshold)
+         0 = Flat
+
+    Position is shifted by 1 bar to avoid look-ahead bias.
+    """
+    ti = TechnicalIndicators(df.copy())
+    ti.add_all()
+    data = ti.dropna().get_df()
+
+    if len(data) < 100:
+        data["Strategy"] = 0
+        return data
+
+    logreg = LogisticRegression(data, features=FEATURES)
+    logreg.add_target(shift=shift)
+
+    train_df, test_df = logreg.train_test_split(train_size=train_size)
+
+    try:
+        logreg.fit(train_df)
+    except Exception:
+        logreg.df["Strategy"] = 0
+        return logreg.df
+
+    # Predict on test data only (no look-ahead)
+    probs = logreg.predict(test_df)
+
+    # Build positions aligned by index
+    result = logreg.df.copy()
+    result["Strategy"] = 0
+
+    test_positions = pd.Series(0, index=test_df.index)
+    test_positions.loc[probs.index] = np.where(
+        probs > threshold, 1,
+        np.where(probs < (1 - threshold), -1, 0)
+    )
+    result.loc[test_df.index, "Strategy"] = test_positions
+
+    result["Strategy"] = result["Strategy"].shift(1)
+    return result.dropna(subset=["Strategy"])
