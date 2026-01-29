@@ -148,15 +148,17 @@ class LogisticRegression:
 
     def train_test_split(self, train_size: float = 0.7) -> Tuple[pd.DataFrame, pd.DataFrame]:
         """
-        Split data into train and test sets (random shuffle).
+        Split data into train and test sets (temporal/chronological).
+
+        Uses time-ordered split to prevent look-ahead bias.
+        First 70% of data for training, last 30% for testing.
 
         Returns (train_df, test_df)
         """
-        df_shuffled = self.df.sample(frac=1, random_state=42).reset_index(drop=True)
-        split_idx = int(len(df_shuffled) * train_size)
+        split_idx = int(len(self.df) * train_size)
 
-        train = df_shuffled.iloc[:split_idx].copy()
-        test = df_shuffled.iloc[split_idx:].copy()
+        train = self.df.iloc[:split_idx].copy()
+        test = self.df.iloc[split_idx:].copy()
 
         print(f"Train: {len(train)} rows | Test: {len(test)} rows")
         return train, test
